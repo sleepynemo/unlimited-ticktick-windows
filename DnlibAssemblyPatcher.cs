@@ -117,37 +117,38 @@ namespace TTPatcher
                 Console.WriteLine("Removed 'proEndDate' property setter.");
             }
 
-            // Modify getter to return DateTime.MaxValue with proper nullable conversion
             if (proEndDateProperty.GetMethod != null)
             {
                 var getter = proEndDateProperty.GetMethod;
-                getter.Body = new CilBody();
-                
                 var module = userModelType.Module;
-                
-                // Find DateTime type in the target assembly's references (not import from current runtime)
-                var dateTimeTypeRef = new TypeRefUser(module, "System", "DateTime", module.CorLibTypes.AssemblyRef);
-                
-                // Create field reference for DateTime.MaxValue in the target assembly's context
-                var maxValueFieldRef = new MemberRefUser(module, "MaxValue", 
-                    new FieldSig(dateTimeTypeRef.ToTypeSig()), dateTimeTypeRef);
-                
-                // Create nullable DateTime constructor reference in the target assembly's context
-                var nullableTypeRef = new TypeRefUser(module, "System", "Nullable`1", module.CorLibTypes.AssemblyRef);
-                var nullableDateTimeType = new GenericInstSig(nullableTypeRef.ToTypeSig().ToClassOrValueTypeSig(), dateTimeTypeRef.ToTypeSig());
-                var nullableCtorRef = new MemberRefUser(module, ".ctor", 
-                    MethodSig.CreateInstance(module.CorLibTypes.Void, dateTimeTypeRef.ToTypeSig()), 
-                    nullableDateTimeType.ToTypeDefOrRef());
-                
-                // Create IL instructions:
-                // 1. Load DateTime.MaxValue
+
+                // Always resolve DateTime from corlib — scanning the assembly for an existing
+                // reference is unreliable and can pick up a reference to the wrong assembly,
+                // causing MissingFieldException at runtime.
+                var dateTimeRef = module.CorLibTypes.GetTypeRef("System", "DateTime");
+                var dateTimeSig = new ValueTypeSig(dateTimeRef);
+
+                // DateTime.MaxValue field reference with guaranteed-correct declaring type
+                var maxValueFieldRef = new MemberRefUser(module, "MaxValue",
+                    new FieldSig(dateTimeSig), dateTimeRef);
+
+                // Return type is Nullable<DateTime>, so we must call Nullable<DateTime>::.ctor.
+                // Returning a bare DateTime for a DateTime? return type is a type-stack mismatch.
+                var nullableRef = module.CorLibTypes.GetTypeRef("System", "Nullable`1");
+                var nullableInstSig = new GenericInstSig(new ValueTypeSig(nullableRef), dateTimeSig);
+                var nullableSpec = new TypeSpecUser(nullableInstSig);
+
+                // The open-type ctor sig uses !0 (GenericVar 0) for the T parameter
+                var ctorSig = MethodSig.CreateInstance(module.CorLibTypes.Void, new GenericVar(0));
+                var ctorRef = new MemberRefUser(module, ".ctor", ctorSig, nullableSpec);
+
+                getter.Body = new CilBody();
+                // ldsfld DateTime::MaxValue → newobj Nullable<DateTime>::.ctor(!0) → ret
                 getter.Body.Instructions.Add(OpCodes.Ldsfld.ToInstruction(maxValueFieldRef));
-                // 2. Create new nullable DateTime with MaxValue
-                getter.Body.Instructions.Add(OpCodes.Newobj.ToInstruction(nullableCtorRef));
-                // 3. Return
+                getter.Body.Instructions.Add(OpCodes.Newobj.ToInstruction(ctorRef));
                 getter.Body.Instructions.Add(OpCodes.Ret.ToInstruction());
 
-                Console.WriteLine("Patched 'proEndDate' property to return DateTime.MaxValue (using target assembly references).");
+                Console.WriteLine("Patched 'proEndDate' to return new DateTime?(DateTime.MaxValue).");
                 return true;
             }
 
