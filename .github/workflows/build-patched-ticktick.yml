@@ -1,5 +1,9 @@
 name: Build and Release Patched TickTick
 
+runs:
+  using: 'node24'
+  main: 'main.js'
+
 on:
   workflow_dispatch:
     inputs:
